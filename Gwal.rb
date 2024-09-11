@@ -24,6 +24,18 @@ module Gwal
       @pool.size.times { @queue << nil }
       @pool.each(&:join)
     end
+
+    def size
+      @pool.size
+    end
+
+    def busy_threads
+      @pool.count { |t| t.status == 'run' }
+    end
+
+    def waiting_tasks
+      @queue.size
+    end
   end
 
   class Future
@@ -45,6 +57,17 @@ module Gwal
     def value
       @mutex.synchronize do
         @condition.wait(@mutex) until @resolved
+        @result
+      end
+    end
+
+    def complete?
+      @mutex.synchronize { @resolved }
+    end
+
+    def wait_for_completion(timeout = nil)
+      @mutex.synchronize do
+        @condition.wait(@mutex, timeout) until @resolved
         @result
       end
     end
@@ -74,6 +97,10 @@ module Gwal
         end
       end
     end
+
+    def fulfilled?
+      @mutex.synchronize { @resolved }
+    end
   end
 
   class SynchronizedQueue
@@ -96,6 +123,14 @@ module Gwal
         @queue.pop
       end
     end
+
+    def size
+      @mutex.synchronize { @queue.size }
+    end
+
+    def clear
+      @mutex.synchronize { @queue.clear }
+    end
   end
 
   class Monitor
@@ -105,6 +140,10 @@ module Gwal
 
     def synchronize(&block)
       @mutex.synchronize(&block)
+    end
+
+    def try_lock
+      @mutex.try_lock
     end
   end
 
@@ -125,6 +164,16 @@ module Gwal
           @condition.wait(@mutex)
         end
       end
+    end
+
+    def reset
+      @mutex.synchronize do
+        @count = 0
+      end
+    end
+
+    def count
+      @mutex.synchronize { @count }
     end
   end
 
@@ -150,6 +199,14 @@ module Gwal
         @condition.signal
       end
     end
+
+    def available?
+      @mutex.synchronize { @count > 0 }
+    end
+
+    def count
+      @mutex.synchronize { @count }
+    end
   end
 
   class MonitorObject
@@ -171,6 +228,14 @@ module Gwal
         @condition.wait(@mutex) until @resource
         @resource
       end
+    end
+
+    def resource_available?
+      @mutex.synchronize { !@resource.nil? }
+    end
+
+    def clear_resource
+      @mutex.synchronize { @resource = nil }
     end
   end
 
@@ -247,6 +312,18 @@ module Gwal
         @write_condition.signal
       end
     end
+
+    def read_lock_count
+      @mutex.synchronize { @readers }
+    end
+
+    def write_lock_count
+      @mutex.synchronize { @writers }
+    end
+
+    def writer_waiting?
+      @mutex.synchronize { @writers > 0 }
+    end
   end
 
   class MonitorWithConditionVariables
@@ -265,6 +342,14 @@ module Gwal
         @resource = resource
         @condition.broadcast
       end
+    end
+
+    def resource_available?
+      @mutex.synchronize { !@resource.nil? }
+    end
+
+    def clear_resource
+      @mutex.synchronize { @resource = nil }
     end
   end
 
@@ -291,6 +376,90 @@ module Gwal
     def shutdown
       @workers.size.times { @queue << nil }
       @workers.each(&:join)
+    end
+
+    def leader
+      @leader
+    end
+
+    def follower_threads
+      @workers[1..-1]
+    end
+  end
+
+  class TaskQueue
+    def initialize
+      @queue = Queue.new
+      @mutex = Mutex.new
+      @condition = ConditionVariable.new
+    end
+
+    def enqueue(task)
+      @mutex.synchronize do
+        @queue.push(task)
+        @condition.signal
+      end
+    end
+
+    def dequeue
+      @mutex.synchronize do
+        @condition.wait(@mutex) if @queue.empty?
+        @queue.pop
+      end
+    end
+
+    def size
+      @mutex.synchronize { @queue.size }
+    end
+
+    def clear
+      @mutex.synchronize { @queue.clear }
+    end
+  end
+
+  class ConcurrentMap
+    def initialize
+      @map = {}
+      @mutex = Mutex.new
+    end
+
+    def put(key, value)
+      @mutex.synchronize { @map[key] = value }
+    end
+
+    def get(key)
+      @mutex.synchronize { @map[key] }
+    end
+
+    def delete(key)
+      @mutex.synchronize { @map.delete(key) }
+    end
+
+    def keys
+      @mutex.synchronize { @map.keys }
+    end
+  end
+
+  class ConditionBasedTask
+    def initialize
+      @mutex = Mutex.new
+      @condition = ConditionVariable.new
+      @task_ready = false
+    end
+
+    def set_task_ready
+      @mutex.synchronize do
+        @task_ready = true
+        @condition.signal
+      end
+    end
+
+    def perform_task
+      @mutex.synchronize do
+        @condition.wait(@mutex) until @task_ready
+        # Perform the task
+        "Task performed"
+      end
     end
   end
 end
